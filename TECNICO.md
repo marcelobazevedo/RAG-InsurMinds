@@ -27,7 +27,7 @@ Responsabilidades:
   - tamanho máximo configurado no código (50 MB);
   - bloqueio de nome duplicado.
 - Ao subir arquivo:
-  - salvar em `documentos/`;
+  - salvar em `documentos/` (pasta operacional);
   - disparar ingestão automática;
   - informar sucesso/erro.
 - Botão de limpeza total:
@@ -106,7 +106,7 @@ Responsabilidades:
 
 1. Usuário envia PDF pela sidebar.
 2. `app.py` valida extensão/tamanho/nome duplicado.
-3. Arquivo é salvo em `documentos/<nome>.pdf`.
+3. Arquivo (normalmente selecionado de `documentos_para_upload/`) é salvo em `documentos/<nome>.pdf`.
 4. `app.py` chama ingestão automática:
    - `process_pdf_file()` em `extract_text.py`
    - chunking + metadados
@@ -256,6 +256,7 @@ Serviços:
    - build local
    - porta `8501`
    - monta `./documentos:/app/documentos`
+   - pasta recomendada de origem para seleção na UI: `./documentos_para_upload`
 
 Observações:
 - o mount de `documentos` garante que uploads apareçam no host;

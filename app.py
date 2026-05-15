@@ -19,6 +19,10 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    section[data-testid="stSidebar"] {
+        width: 320px !important;
+        min-width: 320px !important;
+    }
     section[data-testid="stSidebar"] .kb-card {
         border: 1px solid #d9dee7;
         border-radius: 10px;
@@ -100,6 +104,70 @@ st.markdown(
         font-weight: 400;
         color: #6b7280 !important;
     }
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderPagination"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] > div:nth-child(3) {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] input[type="text"] {
+        display: none !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: 0 !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] input[type="file"] {
+        opacity: 0 !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] [data-baseweb="input"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] [role="textbox"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] .st-emotion-cache-1h9usn1 {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] .saved-files-box {
+        border: 1px solid #d2d9e5;
+        border-radius: 8px;
+        background: #edf1f6;
+        padding: 8px;
+        margin-top: 8px;
+        margin-bottom: 10px;
+    }
+    section[data-testid="stSidebar"] .saved-file-text {
+        line-height: 1.15;
+        margin-top: 2px;
+    }
+    section[data-testid="stSidebar"] .saved-file-name {
+        font-size: 15px;
+        color: #2d3442;
+        font-weight: 500;
+    }
+    section[data-testid="stSidebar"] .saved-file-size {
+        font-size: 12px;
+        color: #8a94a6;
+        margin-top: 4px;
+    }
+    section[data-testid="stSidebar"] .saved-file-icon {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: #2f3647;
+        color: #d7deeb;
+        font-size: 18px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-top: 2px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -111,8 +179,25 @@ st.write(
 
 _DOCUMENTS_DIR = Path("documentos")
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_MAX_FILES_PER_BATCH = 20
 _DEFAULT_RETRIEVAL_MODE = "hybrid"
 _DEFAULT_TOP_K = 5
+
+if "uploader_nonce" not in st.session_state:
+    st.session_state["uploader_nonce"] = 0
+if "is_processing_uploads" not in st.session_state:
+    st.session_state["is_processing_uploads"] = False
+if "last_upload_feedback" not in st.session_state:
+    st.session_state["last_upload_feedback"] = None
+if "last_uploader_selected_names" not in st.session_state:
+    st.session_state["last_uploader_selected_names"] = []
+
+
+def _upload_signature(uploaded_files) -> str:
+    parts = []
+    for f in uploaded_files or []:
+        parts.append(f"{Path(f.name).name}:{getattr(f, 'size', 0)}")
+    return "|".join(sorted(parts))
 
 
 def _source_label(source: Dict) -> str:
@@ -153,19 +238,40 @@ def _render_sources(sources: List[Dict]) -> None:
     st.markdown("\n".join(lines))
 
 
-def _save_uploaded_pdf(uploaded_file) -> tuple[bool, str]:
+def _save_uploaded_pdf(uploaded_file) -> tuple[str, str]:
     _DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = Path(uploaded_file.name).name
     if not safe_name.lower().endswith(".pdf"):
-        return False, "Arquivo rejeitado: envie somente PDF (.pdf)."
+        return "error", "Arquivo rejeitado: envie somente PDF (.pdf)."
     if uploaded_file.size is not None and uploaded_file.size > _MAX_UPLOAD_BYTES:
-        return False, "Arquivo rejeitado: tamanho máximo permitido é 50 MB."
+        return "error", "Arquivo rejeitado: tamanho máximo permitido é 50 MB."
 
     target_path = _DOCUMENTS_DIR / safe_name
     if target_path.exists():
-        return False, f"Arquivo rejeitado: já existe um PDF com este nome ({safe_name})."
+        return "duplicate", f"Arquivo já existente (ignorado): {safe_name}."
     target_path.write_bytes(uploaded_file.getbuffer())
-    return True, f"PDF salvo em: {target_path}"
+    return "saved", f"PDF salvo em: {target_path}"
+
+
+def _prepare_batch_upload(uploaded_files) -> tuple[List[Path], List[str], List[str], List[str]]:
+    _DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    saved_paths: List[Path] = []
+    saved_msgs: List[str] = []
+    rejected_msgs: List[str] = []
+    duplicate_msgs: List[str] = []
+
+    for uploaded_file in uploaded_files:
+        status, msg = _save_uploaded_pdf(uploaded_file)
+        if status == "saved":
+            safe_name = Path(uploaded_file.name).name
+            saved_paths.append(_DOCUMENTS_DIR / safe_name)
+            saved_msgs.append(msg)
+        elif status == "duplicate":
+            duplicate_msgs.append(f"{uploaded_file.name}: {msg}")
+        else:
+            rejected_msgs.append(f"{uploaded_file.name}: {msg}")
+
+    return saved_paths, saved_msgs, rejected_msgs, duplicate_msgs
 
 
 def _ingest_pdf_to_database(pdf_path: Path) -> tuple[bool, str]:
@@ -202,6 +308,49 @@ def _remove_all_uploaded_pdfs() -> tuple[bool, str]:
     return True, f"{removed} arquivo(s) removido(s) com sucesso."
 
 
+def _remove_single_pdf(file_name: str) -> tuple[bool, str]:
+    target_path = _DOCUMENTS_DIR / file_name
+    if not target_path.exists():
+        return True, f"Arquivo já não existia em documentos/: {file_name}"
+    try:
+        target_path.unlink()
+        return True, f"Arquivo removido: {file_name}"
+    except Exception as exc:
+        return False, f"Falha ao remover arquivo {file_name}: {exc}"
+
+
+def _delete_pdf_rows_from_database(file_name: str) -> tuple[bool, str]:
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv("POSTGRES_HOST", "localhost"),
+            port=int(os.getenv("POSTGRES_PORT", "5432")),
+            user=os.getenv("POSTGRES_USER"),
+            password=os.getenv("POSTGRES_PASSWORD"),
+            dbname=os.getenv("POSTGRES_DB"),
+        )
+        cur = conn.cursor()
+        cur.execute("DELETE FROM dados WHERE metadata ->> 'pdf_name' = %s", (file_name,))
+        removed_rows = cur.rowcount
+        conn.commit()
+        return True, f"Registros removidos da base para {file_name}: {removed_rows}"
+    except Exception as exc:
+        return False, f"Falha ao remover registros do banco para {file_name}: {exc}"
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
+
+
+def _clear_single_document(file_name: str) -> tuple[bool, str]:
+    file_ok, file_msg = _remove_single_pdf(file_name)
+    db_ok, db_msg = _delete_pdf_rows_from_database(file_name)
+    ok = file_ok and db_ok
+    return ok, f"{file_msg} {db_msg}"
+
+
 def _truncate_dados_table() -> tuple[bool, str]:
     conn = None
     cur = None
@@ -233,6 +382,26 @@ def _clear_documents_and_database() -> tuple[bool, str]:
     return ok, f"{files_msg} {db_msg}"
 
 
+def _list_saved_pdfs() -> List[str]:
+    if not _DOCUMENTS_DIR.exists():
+        return []
+    return sorted([p.name for p in _DOCUMENTS_DIR.glob("*.pdf") if p.is_file()], key=str.lower)
+
+
+def _human_file_size(size_bytes: int) -> str:
+    if size_bytes < 1024 * 1024:
+        return f"{max(1, size_bytes // 1024)}KB"
+    return f"{size_bytes / (1024 * 1024):.1f}MB"
+
+
+def _truncate_filename(name: str, max_len: int = 26) -> str:
+    if len(name) <= max_len:
+        return name
+    left = 10
+    right = 12
+    return f"{name[:left]}...{name[-right:]}"
+
+
 with st.sidebar:
     st.markdown(
         """
@@ -244,33 +413,166 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
-    uploaded_pdf = st.file_uploader(
+    uploaded_pdfs = st.file_uploader(
         "Arraste e solte aqui ou clique para selecionar",
         type=["pdf"],
-        accept_multiple_files=False,
+        accept_multiple_files=True,
+        key=f"pdf_batch_uploader_{st.session_state['uploader_nonce']}",
         label_visibility="collapsed",
-        help="Somente PDF, tamanho máximo 50 MB e sem nome duplicado.",
+        help=(
+            "Somente PDF, tamanho máximo 50 MB por arquivo, "
+            f"sem nome duplicado e até {_MAX_FILES_PER_BATCH} arquivos por envio."
+        ),
     )
-    if uploaded_pdf is not None:
-        saved_ok, saved_msg = _save_uploaded_pdf(uploaded_pdf)
-        if saved_ok:
-            st.success(saved_msg)
-            pdf_path = _DOCUMENTS_DIR / Path(uploaded_pdf.name).name
-            with st.spinner("Processando PDF e salvando no banco..."):
-                ingest_ok, ingest_msg = _ingest_pdf_to_database(pdf_path)
-            if ingest_ok:
-                st.success(ingest_msg)
-            else:
-                st.error(ingest_msg)
-        else:
-            st.error(saved_msg)
+    selected_names = [Path(f.name).name for f in (uploaded_pdfs or [])]
+    st.session_state["last_uploader_selected_names"] = selected_names
+    feedback = st.session_state.get("last_upload_feedback")
+    if feedback:
+        if feedback.get("saved"):
+            st.success(
+                f"{feedback['saved']} arquivo(s) salvo(s) em documentos/. "
+                f"Ingestão concluída para {feedback['ingested_ok']} arquivo(s). "
+                f"Total aproximado de chunks indexados: {feedback['total_chunks']}."
+            )
+        if feedback.get("rejected_msgs"):
+            st.warning(
+                "Alguns arquivos foram rejeitados:\n- "
+                + "\n- ".join(feedback["rejected_msgs"])
+            )
+        if feedback.get("duplicate_count"):
+            st.info(
+                f"{feedback['duplicate_count']} arquivo(s) já existiam e foram ignorados."
+            )
+        if feedback.get("ingest_err_msgs"):
+            st.error(
+                "Falha de ingestão em alguns arquivos:\n- "
+                + "\n- ".join(feedback["ingest_err_msgs"])
+            )
+        st.session_state["last_upload_feedback"] = None
 
-    if st.button("🗑️  Remover todos os arquivos", use_container_width=True):
+    if uploaded_pdfs:
+        batch_signature = _upload_signature(uploaded_pdfs)
+        if st.session_state.get("last_processed_upload_signature") == batch_signature:
+            uploaded_pdfs = []
+        else:
+            st.session_state["last_processed_upload_signature"] = batch_signature
+
+    if uploaded_pdfs:
+        if len(uploaded_pdfs) > _MAX_FILES_PER_BATCH:
+            st.error(
+                f"Lote rejeitado: envie no máximo {_MAX_FILES_PER_BATCH} arquivos por vez. "
+                f"Recebidos: {len(uploaded_pdfs)}."
+            )
+        else:
+            saved_paths, saved_msgs, rejected_msgs, duplicate_msgs = _prepare_batch_upload(uploaded_pdfs)
+
+            if saved_msgs:
+                st.success(
+                    f"{len(saved_msgs)} arquivo(s) salvo(s) em documentos/. "
+                    "Iniciando ingestão..."
+                )
+            if rejected_msgs:
+                st.warning(
+                    "Alguns arquivos foram rejeitados:\n- "
+                    + "\n- ".join(rejected_msgs)
+                )
+            if duplicate_msgs:
+                st.info(
+                    "Arquivos já existentes foram ignorados:\n- "
+                    + "\n- ".join(duplicate_msgs)
+                )
+
+            if saved_paths:
+                st.session_state["is_processing_uploads"] = True
+                progress = st.progress(0.0, text="Ingestão em andamento...")
+                ingest_ok_msgs: List[str] = []
+                ingest_err_msgs: List[str] = []
+                total_chunks = 0
+                total_files = len(saved_paths)
+                try:
+                    for idx, pdf_path in enumerate(saved_paths, start=1):
+                        progress.progress(
+                            idx / total_files,
+                            text=f"Ingerindo {idx}/{total_files}: {pdf_path.name}",
+                        )
+                        ok, msg = _ingest_pdf_to_database(pdf_path)
+                        if ok:
+                            ingest_ok_msgs.append(f"{pdf_path.name}: {msg}")
+                            try:
+                                total_chunks += int(msg.split(":")[1].split("chunk")[0].strip())
+                            except Exception:
+                                pass
+                        else:
+                            ingest_err_msgs.append(f"{pdf_path.name}: {msg}")
+                finally:
+                    st.session_state["is_processing_uploads"] = False
+
+                progress.progress(1.0, text="Ingestão finalizada.")
+                st.session_state["last_upload_feedback"] = {
+                    "saved": len(saved_msgs),
+                    "rejected_msgs": rejected_msgs,
+                    "duplicate_count": len(duplicate_msgs),
+                    "ingested_ok": len(ingest_ok_msgs),
+                    "ingest_err_msgs": ingest_err_msgs,
+                    "total_chunks": total_chunks,
+                }
+                st.session_state["uploader_nonce"] += 1
+                st.session_state["last_processed_upload_signature"] = None
+                st.rerun()
+
+    if st.session_state.get("is_processing_uploads"):
+        st.info("Processando uploads. A exclusão de documentos ficará disponível após a conclusão.")
+
+    saved_pdf_names = _list_saved_pdfs()
+    if saved_pdf_names:
+        # st.markdown('<div class="saved-files-box">', unsafe_allow_html=True)
+        for idx, file_name in enumerate(saved_pdf_names):
+            file_path = _DOCUMENTS_DIR / file_name
+            file_size = _human_file_size(file_path.stat().st_size) if file_path.exists() else "-"
+            display_name = _truncate_filename(file_name)
+
+            icon_col, name_col, remove_col = st.columns([0.16, 0.68, 0.16], vertical_alignment="center")
+            with icon_col:
+                st.markdown('<div class="saved-file-icon">▤</div>', unsafe_allow_html=True)
+            with name_col:
+                st.markdown(
+                    (
+                        '<div class="saved-file-text">'
+                        f'<div class="saved-file-name">{display_name}</div>'
+                        f'<div class="saved-file-size">{file_size}</div>'
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with remove_col:
+                if st.button(
+                    "✖",
+                    key=f"remove_saved_pdf_{idx}_{file_name}",
+                    disabled=st.session_state.get("is_processing_uploads", False),
+                    help=f"Remover {file_name}",
+                    use_container_width=True,
+                ):
+                    ok, message = _clear_single_document(file_name)
+                    if ok:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                    st.session_state["last_processed_upload_signature"] = None
+                    st.session_state["last_uploader_selected_names"] = []
+                    st.session_state["uploader_nonce"] += 1
+                    st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    if st.button("🗑️  Remover todos os arquivos", use_container_width=True, disabled=st.session_state.get("is_processing_uploads", False)):
         ok, message = _clear_documents_and_database()
         if ok:
             st.success(message)
         else:
             st.error(message)
+        st.session_state["last_processed_upload_signature"] = None
+        st.session_state["last_uploader_selected_names"] = []
+        st.session_state["uploader_nonce"] += 1
+        st.rerun()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []

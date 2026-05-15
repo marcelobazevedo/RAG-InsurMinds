@@ -1,16 +1,36 @@
 # RAG-InsurMinds
 
+## Aviso Importante
+
+- Os arquivos oficiais deste projeto estão em: https://github.com/marcelobazevedo/RAG-InsurMinds
+- Para executar, é necessário baixar/clonar esse repositório.
+- A execução da aplicação requer ambiente Docker (Docker Engine + Docker Compose).
+
 Aplicação RAG para seguro residencial com:
 - interface em Streamlit;
 - upload de PDFs;
 - ingestão automática para PostgreSQL + pgvector;
-- recuperação `dense`, `sparse` e `hybrid`.
+- recuperação `dense`, `sparse` e `hybrid`;
+- resposta em streaming com fontes citadas.
+
+Documentação complementar:
+- [TECNICO.md](/home/marcelo/Development/RAG-InsurMinds/TECNICO.md)
+- [RELATORIO.md](/home/marcelo/Development/RAG-InsurMinds/RELATORIO.md)
+
+## Vídeo de demonstração
+
+- Link: https://drive.google.com/file/d/1GF7AtyAyOZ2fKrEI6nbRF6IB2XikERXc/view?usp=sharing
+
+## Pasta de documentos para upload
+
+- Utilize os arquivos que estao na pasta `documentos_para_upload/` para fazer o upload.
+- Durante o uso da aplicação, os arquivos enviados ficam em `documentos/` (pasta operacional usada na ingestão e no link de fontes).
 
 ## Requisitos
 
 - Python `3.12`
 - `uv` instalado
-- Docker + Docker Compose (para execução em containers)
+- Docker + Docker Compose (execução recomendada)
 - Ollama (se `MODELO_LOCAL=true`) **ou** credenciais OpenAI (se `MODELO_LOCAL=false`)
 
 ## Estrutura rápida
@@ -22,15 +42,19 @@ RAG-InsurMinds/
 ├── Dockerfile
 ├── .env
 ├── .env_sample
+├── documentos_para_upload/       # PDFs de origem para upload manual na interface
 ├── documentos/                  # PDFs enviados/ingeridos
 ├── initdb/
-├── rag/
-│   ├── ingest/
-│   │   ├── extract_text.py
-│   │   ├── truncate_data.py
-│   │   └── reset_project_state.py
-│   ├── retrieval/
-│   └── graph/
+├── TECNICO.md
+├── RELATORIO.md
+└── rag/
+    ├── augmented/
+    ├── ingest/
+    │   ├── extract_text.py
+    │   ├── truncate_data.py
+    │   └── reset_project_state.py
+    ├── retrieval/
+    └── graph/
 ```
 
 ## Configuração de ambiente
@@ -41,9 +65,9 @@ RAG-InsurMinds/
 cp .env_sample .env
 ```
 
-2. Ajuste `.env` conforme seu modo de execução.
+2. Ajuste o `.env`.
 
-### Principais variáveis
+### Variáveis principais
 
 - `MODELO_LOCAL=true|false`
 - `LLM_MODEL` e `EMBEDDING_MODEL` (modo local)
@@ -52,13 +76,11 @@ cp .env_sample .env
 - `POSTGRES_*` (conexão de banco)
 - `CHUNK_SIZE` e `CHUNK_OVERLAP` (ingestão)
 
-## Como configurar os modelos (passo a passo)
+## Como configurar os modelos
 
-Toda configuração de modelo fica no arquivo [`.env`](/home/marcelo/Development/RAG-InsurMinds/.env).
+Toda configuração de modelo fica em [`.env`](/home/marcelo/Development/RAG-InsurMinds/.env).
 
-### Opção A: usar modelo local (Ollama)
-
-Use quando quiser rodar sem OpenAI:
+### Opção A: modelo local (Ollama)
 
 ```env
 MODELO_LOCAL=true
@@ -69,9 +91,7 @@ OLLAMA_URL=http://host.docker.internal:11434
 
 Neste modo, `OPENAI_API_KEY` pode ficar vazio.
 
-### Opção B: usar OpenAI (ChatGPT API)
-
-Use quando quiser rodar com modelos OpenAI:
+### Opção B: OpenAI (ChatGPT API)
 
 ```env
 MODELO_LOCAL=false
@@ -80,13 +100,13 @@ OPENAI_MODEL=gpt-4.1-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-large
 ```
 
-Ponto mais importante: a chave deve ser colocada em [`.env`](/home/marcelo/Development/RAG-InsurMinds/.env), no campo:
+A chave deve ser definida em:
 
 ```env
 OPENAI_API_KEY=...
 ```
 
-Sem essa chave (e com `MODELO_LOCAL=false`), a aplicação não consegue chamar a API da OpenAI.
+Sem ela (com `MODELO_LOCAL=false`), a aplicação não consegue chamar a API da OpenAI.
 
 ## Uso com Docker (recomendado)
 
@@ -106,10 +126,17 @@ docker compose ps
 
 - URL: `http://localhost:8501`
 
-### Containers criados
+### Containers
 
 - `rag_insurminds_postgres`
 - `rag_insurminds_streamlit`
+
+### Bind mounts usados
+
+- `./documentos:/app/documentos`
+- `./documentos:/app/static`
+
+O primeiro é usado pela ingestão. O segundo é usado para abrir os links das fontes no chat.
 
 ## Uso com uv (host/local)
 
@@ -129,20 +156,30 @@ uv run streamlit run app.py
 
 No app, pela sidebar:
 
-1. Envie um PDF (somente `.pdf`, até 50 MB, sem nome duplicado).
-2. O sistema salva em `documentos/`.
-3. A ingestão é executada automaticamente (equivalente à lógica de `rag.ingest.extract_text`).
-4. Os chunks e embeddings são gravados na tabela `dados`.
+1. Selecione um ou mais PDFs para upload direto.
+   - Sugestão: use os arquivos da pasta `documentos_para_upload/`.
+2. Regras de validação:
+- somente `.pdf`;
+- até 50 MB por arquivo;
+- sem nome duplicado;
+- até 20 arquivos por envio.
+3. O sistema salva os arquivos válidos em `documentos/` (pasta operacional).
+4. A ingestão automática é executada em sequência (arquivo a arquivo) com barra de progresso.
+5. Ao final, o app mostra resumo de:
+- arquivos salvos;
+- arquivos rejeitados (com motivo);
+- ingestões concluídas e falhas.
+6. Chunks e embeddings são gravados na tabela `dados`.
 
 ## Ingestão manual (opcional)
 
-### Rodando dentro do container
+### Dentro do container
 
 ```bash
 docker compose exec streamlit uv run --no-sync python -m rag.ingest.extract_text
 ```
 
-### Rodando no host
+### No host
 
 ```bash
 uv run python -m rag.ingest.extract_text
@@ -152,10 +189,11 @@ uv run python -m rag.ingest.extract_text
 
 No app existe o botão **Remover todos os arquivos**, que:
 
-- remove todos os PDFs de `documentos/`;
+- remove os PDFs de `documentos/`;
 - executa `TRUNCATE TABLE dados RESTART IDENTITY`.
 
-## Comandos úteis de operação
+
+## Comandos úteis
 
 ### Logs
 
@@ -171,7 +209,7 @@ docker compose down
 docker compose up -d --build
 ```
 
-### Recriar sem rebuild de imagem
+### Recriar sem rebuild
 
 ```bash
 docker compose up -d --force-recreate
@@ -182,16 +220,24 @@ docker compose up -d --force-recreate
 ### `connection refused` no PostgreSQL
 
 - Verifique containers: `docker compose ps`
-- Se rodar no host, ajuste `.env` para porta publicada no compose (`54321`):
+- Se rodar no host, ajuste `.env` para porta publicada:
   - `POSTGRES_HOST=localhost`
   - `POSTGRES_PORT=54321`
 
 ### App sobe, mas não responde bem
 
 - Confirme modelos no `.env`.
-- Em modo local, valide se Ollama está acessível em `OLLAMA_URL`.
+- Em modo local, valide `OLLAMA_URL`.
 
 ### Upload não aparece na pasta local
 
-- Verifique bind mount no `docker-compose.yaml`:
+- Verifique mount:
   - `./documentos:/app/documentos`
+
+### Link da fonte não abre
+
+- Confirme se o arquivo existe em `documentos/`.
+- Confirme mount estático:
+  - `./documentos:/app/static`
+- Padrão de link esperado no app:
+  - `/app/static/<nome_do_arquivo>.pdf`
