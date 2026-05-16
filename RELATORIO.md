@@ -61,6 +61,8 @@ A descrição deste relatório foi construída a partir dos artefatos do própri
 
 A arquitetura está representada no diagrama [desenho_tecnico_rag_insurminds.png](/home/marcelo/Development/RAG-InsurMinds/desenho_tecnico_rag_insurminds.png), com quatro camadas principais:
 
+![Desenho técnico da arquitetura RAG-InsurMinds](desenho_tecnico_rag_insurminds.png)
+
 1. Camada de Interface
 - Streamlit (`app.py`) com chat, upload e exibição de fontes.
 
@@ -80,7 +82,54 @@ A arquitetura está representada no diagrama [desenho_tecnico_rag_insurminds.png
 - guardrail de suficiência de evidência;
 - geração de resposta por LLM com streaming.
 
-### 4.1 Infraestrutura de execução
+### 4.1 Leitura do Desenho Técnico
+
+O desenho técnico resume o funcionamento da solução como uma pipeline RAG de ponta a ponta. A leitura pode ser feita da esquerda para a direita, começando pela interação do usuário e avançando até a resposta fundamentada em fontes.
+
+1. Entrada do usuário
+- O usuário acessa a aplicação pela interface Streamlit.
+- Pela mesma interface, ele pode enviar documentos PDF para compor a base de conhecimento ou fazer perguntas no chat.
+
+2. Upload e armazenamento operacional dos PDFs
+- Os arquivos enviados pela sidebar são validados pela aplicação.
+- PDFs válidos são gravados na pasta `documentos/`, que funciona como área operacional para ingestão e também como origem dos links de fonte exibidos no chat.
+
+3. Pipeline de ingestão
+- Cada PDF salvo passa pelo processo de extração textual.
+- O texto extraído é normalizado, dividido em seções quando marcadores do domínio são encontrados e depois segmentado em chunks menores.
+- Cada chunk recebe metadados de rastreabilidade, como nome do PDF, `doc_id`, tipo de trecho, índice do chunk e informações inferidas do documento.
+
+4. Geração de embeddings
+- Para cada chunk textual, a aplicação gera um vetor de embedding.
+- O provedor do embedding depende da configuração do ambiente: modelo local via Ollama quando `MODELO_LOCAL=true`, ou OpenAI quando `MODELO_LOCAL=false`.
+- A dimensão do vetor deve ser compatível com `PGVECTOR_DIM`, pois essa dimensão define a coluna vetorial no banco.
+
+5. Persistência no PostgreSQL + pgvector
+- Os chunks, metadados e embeddings são gravados na tabela `dados`.
+- A extensão pgvector permite armazenar e consultar vetores diretamente no PostgreSQL.
+- O campo `chunk_id` atua como chave lógica para evitar duplicidade na ingestão.
+
+6. Pergunta e recuperação de contexto
+- Quando o usuário envia uma pergunta, o fluxo RAG consulta a base vetorial e textual.
+- A recuperação pode ocorrer em modo `dense`, usando similaridade entre embeddings; em modo `sparse`, usando BM25; ou em modo `hybrid`, combinando os dois rankings por Reciprocal Rank Fusion.
+- A etapa de query expansion pode reformular a pergunta com termos do domínio de seguro residencial para aumentar o recall.
+
+7. Geração da resposta
+- Os chunks recuperados são formatados como contexto e enviados ao LLM.
+- O prompt orienta o modelo a responder apenas com base no contexto recuperado e a citar evidências no formato `[doc_id#chunk_id]`.
+- A resposta é transmitida em streaming para melhorar a experiência de uso.
+
+8. Exibição de fontes e rastreabilidade
+- Ao final da geração, a interface exibe os documentos consultados.
+- Os links apontam para os PDFs salvos em `documentos/`, permitindo verificar a origem das informações usadas na resposta.
+
+9. Operações de manutenção
+- O desenho também contempla a necessidade de manter consistência entre arquivos físicos e índice vetorial.
+- A aplicação permite remover todos os PDFs e truncar a tabela `dados`; também há suporte no código para remover um documento específico e seus registros correspondentes.
+
+As seções seguintes detalham tecnicamente cada bloco apresentado no desenho, desde a ingestão dos documentos até a geração da resposta com fontes.
+
+### 4.2 Infraestrutura de execução
 
 No `docker-compose` há dois serviços:
 
